@@ -1,4 +1,7 @@
 requests
 garminconnect
-ollama
-huggingface_hub
+langgraph
+langchain-ollama
+langgraph-checkpoint-sqlite
+pydantic-settings
+pytest

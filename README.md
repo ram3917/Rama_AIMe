@@ -1,56 +1,91 @@
-# RAMA - Personal Trainer
+# RAMA - Personal Assistant + Trainer + Dietician
 
-A Telegram chatbot that's your personal trainer: it reads your Garmin
-data (steps, sleep, weight, workouts) from a local database and talks to
-you about it, in your pocket, all day. Fully self-hosted - no cloud LLM,
-no Notion, no external chat platform beyond Telegram itself.
+A Telegram bot backed by a local Ollama model and a three-node
+[LangGraph](https://langchain-ai.github.io/langgraph/) app: a general
+**Assistant** node, a **Personal Trainer** node, and a **Dietician**
+node. A small router decides which node handles each message.
 
-**New to this repo?** See [HOWTO.md](HOWTO.md) for setup from scratch.
-
-## What's here
+## Repo structure
 
 ```
-scripts/garmin_sync.py     # pulls Garmin data, writes to trainer.db (run via cron)
-trainer/db.py               # the only file that opens trainer.db (profile, daily log, chat history)
-trainer/backends.py          # LLM backends: ollama (local) or hf (Hugging Face hosted API)
-trainer/prompts.py            # the trainer's persona/system prompt
-trainer/bot.py                 # Telegram bot, long polling - the actual chat interface
-trainer/setup_profile.py        # one-time interactive setup of your goals/limits
+trainer/
+  config.py        # settings, loaded from .env (Ollama, Garmin, Telegram)
+  personal.py       # Assistant node: tools + its own personal.db
+  fitness_data.py    # Personal Trainer node: tools + its own fitness.db + Garmin
+  dietician.py        # Dietician node: tools + its own meals.db
+  graph.py              # LangGraph wiring: all three nodes, the router, checkpointing
+  bot.py                 # Telegram long-polling interface
+scripts/
+  garmin.py                       # pulls steps/sleep/weight/workouts from Garmin Connect into data/fitness.db
+tests/                              # pytest suite - mocked, no live Garmin/Telegram/Ollama calls
+data/                                  # sqlite files (gitignored): personal.db, fitness.db, meals.db, checkpoints.db
+requirements.txt
+.env.example
+run.bat                                     # starter script
 ```
 
-## How it fits together
+## The nodes
 
-1. **`scripts/garmin_sync.py`** runs on a schedule (cron) and upserts one
-   row per day into `trainer.db`'s `daily_log` table: steps, sleep hours,
-   weight (if you use a Garmin smart scale), resting HR, body battery,
-   stress, and workout details (type, duration, calories, HR, training
-   load, distance, elevation).
-2. **`trainer/bot.py`** is a long-polling Telegram bot (no public
-   endpoint, no exposed ports). Every message you send gets answered with
-   your recent chat history plus today's/yesterday's logged data as
-   context, via whichever `LLM_BACKEND` you configured. Send it a bare
-   number in a plausible weight range (e.g. `82.4`) and it logs that as
-   today's weight directly, no LLM call needed.
-3. Everything - your goals, your Garmin data, and the full chat history -
-   lives in one local SQLite file, `trainer.db`. Nothing is sent
-   anywhere except to Telegram and to whichever LLM backend you picked.
+- **Assistant** (`trainer/personal.py`) - general chat, plus tools:
+  `remember`, `recall`, and `list_notes` for saving/looking up personal
+  facts and notes (e.g. "remember my wifi password is X"); and
+  `add_todo`, `complete_todo`, and `list_todos` for tracking todos - a
+  todo can have a deadline (the assistant reminds you of it when adding
+  one), and is either `open` or `done`. Closed todos older than a day
+  are purged automatically whenever the list is read. Backed by `notes`
+  and `todos` tables in `data/personal.db`.
+- **Personal Trainer** (`trainer/fitness_data.py`) - anything about
+  workouts, steps, sleep, weight, or Garmin data. Two tools:
+  `get_daily_log` (read, runs immediately - steps, sleep, weight, and
+  workout summary: type, duration, calories, distance, heart rate) and
+  `log_weight` (write - pauses the graph and asks for a yes/no
+  confirmation via LangGraph's `interrupt()` before pushing to Garmin
+  and the `daily_log` table in `data/fitness.db`).
+- **Dietician** (`trainer/dietician.py`) - anything about food, meals,
+  calories, or macros. No external food database - when you describe
+  what you ate, the model estimates calories and macros (protein/carbs/
+  fat) itself from general nutrition knowledge, then calls `log_meal`,
+  which pauses the graph and asks you to confirm the calorie estimate
+  via LangGraph's `interrupt()` before saving to the `meal_entries`
+  table in `data/meals.db`. `get_meals` (read) looks up what's already
+  logged for a date, with totals.
+- **Router** (`trainer/graph.py`) - one small structured-output call to
+  the same Ollama model, classifying each incoming message as
+  `assistant`, `trainer`, or `dietician` before it's dispatched.
+
+Conversation history and any pending confirmation persist across bot
+restarts in `data/checkpoints.db` - LangGraph's own checkpoint database,
+keyed by Telegram chat id.
+
+## Node graph
+
+```mermaid
+flowchart TD
+    START([START]) --> route{router}
+    route -->|assistant| assistant[["Assistant node<br/>remember / recall / list_notes<br/>add_todo / complete_todo / list_todos<br/>data/personal.db"]]
+    route -->|trainer| trainer[["Personal Trainer node<br/>get_daily_log / log_weight<br/>data/fitness.db + Garmin"]]
+    route -->|dietician| dietician[["Dietician node<br/>log_meal / get_meals<br/>data/meals.db"]]
+    assistant --> END([END])
+    trainer --> END
+    dietician --> END
+```
 
 ## Setup
 
-See [HOWTO.md](HOWTO.md) for the full walkthrough (Garmin, Telegram,
-Ollama or Hugging Face). Short version:
-
 ```bash
 pip install -r requirements.txt
-cp .env.example .env   # fill in your credentials
-export $(grep -v '^#' .env | xargs)
-
-python -m trainer.setup_profile      # answer a few questions once
-python scripts/garmin_sync.py --days 30   # backfill the last 30 days
-python -m trainer.bot                      # start the bot
+cp .env.example .env         # fill in Garmin, Telegram, Ollama settings
+python scripts/garmin.py --days 30   # backfill Garmin data (get_daily_log/log_weight read this)
+run.bat                                # or: python -m trainer.bot
 ```
 
-## Non-goals
+Re-run `garmin.py` on a schedule (e.g. cron) to keep fitness data
+current - the bot never fetches from Garmin for reads, only this script
+does. Meals have no external source; they're logged straight from
+conversation with the Dietician node.
 
-No Notion, no cloud LLM API, no Slack, no n8n, no multi-agent framework.
-This is one bot, one database, one job: your personal trainer.
+## Running the tests
+
+```bash
+pytest -q
+```
