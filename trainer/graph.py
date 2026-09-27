@@ -5,6 +5,10 @@ routed by a small classification call. This is the one place that
 decides which specialist handles a message; everything else (the
 tool-calling loop, write confirmations, chat history across restarts)
 is langgraph/langchain machinery, not ours.
+
+The trainer and dietician also get the user's Notion "Health Goals" page
+(a plain page of prose/targets, not a database) fetched fresh into their
+system prompt on every message, so goals stay current without a restart.
 """
 import sqlite3
 from typing import Literal
@@ -16,14 +20,24 @@ from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.prebuilt import create_react_agent
 from pydantic import BaseModel
 
-from trainer import dietician, fitness_data, personal
+from trainer import dietician, fitness_data, notion, personal
 from trainer.config import settings
 
 model = ChatOllama(base_url=settings.ollama_host, model=settings.ollama_model)
 
+
+def _with_health_goals(system_prompt: str):
+    def prompt_fn(state: MessagesState) -> list:
+        goals = notion.get_page_text(settings.notion_health_goals_page_id) if settings.notion_health_goals_page_id else ""
+        combined = f"{system_prompt}\n\nHealth goals (from Notion):\n{goals}" if goals else system_prompt
+        return [SystemMessage(combined)] + state["messages"]
+
+    return prompt_fn
+
+
 assistant_agent = create_react_agent(model, tools=personal.TOOLS, prompt=personal.SYSTEM_PROMPT)
-trainer_agent = create_react_agent(model, tools=fitness_data.TOOLS, prompt=fitness_data.SYSTEM_PROMPT)
-dietician_agent = create_react_agent(model, tools=dietician.TOOLS, prompt=dietician.SYSTEM_PROMPT)
+trainer_agent = create_react_agent(model, tools=fitness_data.TOOLS, prompt=_with_health_goals(fitness_data.SYSTEM_PROMPT))
+dietician_agent = create_react_agent(model, tools=dietician.TOOLS, prompt=_with_health_goals(dietician.SYSTEM_PROMPT))
 
 
 class _Route(BaseModel):

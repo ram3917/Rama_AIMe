@@ -1,0 +1,15 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: self-hosted   # the Windows machine
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          clean: false  # preserve the .env file placed in this runner's work directory (see HOWTO)
+      - run: pip install -r requirements.txt
+      - run: nssm restart RamaOrchestrator

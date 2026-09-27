@@ -21,12 +21,16 @@ class Settings(BaseSettings):
     garmin_email: str | None = None
     garmin_password: str | None = None
 
+    notion_token: str | None = None
+    notion_todos_db_id: str | None = None
+    notion_notes_db_id: str | None = None
+    notion_fitness_db_id: str | None = None
+    notion_meals_db_id: str | None = None
+    notion_health_goals_page_id: str | None = None
+
     ollama_host: str = "http://localhost:11434"
     ollama_model: str = "llama3.1"
 
-    personal_db_path: Path = REPO_ROOT / "data" / "personal.db"
-    fitness_db_path: Path = REPO_ROOT / "data" / "fitness.db"
-    meals_db_path: Path = REPO_ROOT / "data" / "meals.db"
     checkpoint_db_path: Path = REPO_ROOT / "data" / "checkpoints.db"
     log_level: str = "INFO"
 

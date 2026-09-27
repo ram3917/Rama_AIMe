@@ -156,3 +156,6 @@ data/*.db
 data/*.db-shm
 data/*.db-wal
 data/*.db.bak
+
+# Tests (run locally, not tracked/pushed)
+tests/
